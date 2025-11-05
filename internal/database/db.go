@@ -154,8 +154,25 @@ func (db *DB) CreateBangumi(bangumi *model.Bangumi) error {
 		if oldBangumi.TmdbID == nil && bangumi.TmdbItem != nil {
 			oldBangumi.TmdbItem = bangumi.TmdbItem
 		}
-		// FIXME: 这里会重复添加, 要改改
-		oldBangumi.EpisodeMetadata = bangumi.EpisodeMetadata
+		// 修复：只添加不存在的 EpisodeMetadata，避免重复
+		for _, newMeta := range bangumi.EpisodeMetadata {
+			exists := false
+			for _, existingMeta := range oldBangumi.EpisodeMetadata {
+				// 通过 Title、Season、Group、Resolution 判断是否为同一条记录
+				if existingMeta.Title == newMeta.Title &&
+					existingMeta.Season == newMeta.Season &&
+					existingMeta.Group == newMeta.Group &&
+					existingMeta.Resolution == newMeta.Resolution &&
+					existingMeta.SubType == newMeta.SubType {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				newMeta.BangumiID = oldBangumi.ID
+				oldBangumi.EpisodeMetadata = append(oldBangumi.EpisodeMetadata, newMeta)
+			}
+		}
 		return db.Save(&oldBangumi).Error
 	}
 	return db.Save(bangumi).Error

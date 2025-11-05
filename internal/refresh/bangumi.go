@@ -66,8 +66,19 @@ func RefreshRSS(ctx context.Context, url string) {
 	for _, t := range torrents {
 		metaData, err := db.GetBangumiParseByTitle(t.Name)
 		if err != nil {
+			// 如果找不到对应的 Bangumi，跳过该种子，等待后续解析
+			slog.Warn("找不到对应的番剧信息，跳过该种子", slog.String("torrent", t.Name), slog.String("error", err.Error()))
+			continue
 		}
 		t.BangumiID = metaData.BangumiID
+
+		// 检查该 torrent 是否已存在
+		existingTorrent, _ := db.GetTorrentByURL(t.URL)
+		if existingTorrent != nil && existingTorrent.Downloaded {
+			slog.Debug("种子已存在且已下载，跳过", slog.String("url", t.URL))
+			continue
+		}
+
 		db.CreateTorrent(t)
 		download.DQueue.Add(ctx, t)
 	}

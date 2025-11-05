@@ -59,21 +59,22 @@ func NewTmdbItem() *TmdbItem {
 
 // EpisodeMetadata 用来存储番剧解析器的原始信息
 // 是否要认为一个 EpisodeMetadata 可以对应多个 Bangumi?
+// 复合唯一索引：BangumiID + Title + Season + Group + Resolution + SubType，防止重复添加
 type EpisodeMetadata struct {
 	ID         int    `gorm:"primaryKey;autoIncrement"`
-	Title      string `gorm:"default:'';comment:'番剧名称'"`
-	Season     int    `gorm:"default:1;comment:'季度'"`
+	Title      string `gorm:"default:'';comment:'番剧名称';uniqueIndex:idx_episode_metadata_unique"`
+	Season     int    `gorm:"default:1;comment:'季度';uniqueIndex:idx_episode_metadata_unique"`
 	SeasonRaw  string `gorm:"default:'';comment:'季度原名'"`
 	Episode    int    `gorm:"-;comment:'集数'"`
 	Sub        string `gorm:"default:'';comment:'字幕语言'"`
-	SubType    string `gorm:"default:'';comment:'字幕类型'"`
-	Group      string `gorm:"default:'';comment:'字幕组'"`
+	SubType    string `gorm:"default:'';comment:'字幕类型';uniqueIndex:idx_episode_metadata_unique"`
+	Group      string `gorm:"default:'';comment:'字幕组';uniqueIndex:idx_episode_metadata_unique"`
 	Year       string `gorm:"-;comment:'年份'"`
-	Resolution string `gorm:"default:'';comment:'分辨率'"`
+	Resolution string `gorm:"default:'';comment:'分辨率';uniqueIndex:idx_episode_metadata_unique"`
 	Source     string `gorm:"default:'';comment:'来源'"`
 	AudioInfo  string `gorm:"default:'';comment:'音频信息'"`
 	VideoInfo  string `gorm:"default:'';comment:'视频信息'"`
-	BangumiID  int    `gorm:"index;comment:'关联的Bangumi ID'"`
+	BangumiID  int    `gorm:"index;comment:'关联的Bangumi ID';uniqueIndex:idx_episode_metadata_unique"`
 }
 
 // String 式化输出

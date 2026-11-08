@@ -65,7 +65,13 @@ func InitProgram(ctx context.Context) *Program {
 
 func (p *Program) Start(ctx context.Context) {
 	p.ctx, p.cancel = context.WithCancel(ctx)
-	go p.downloader.Login(p.ctx)
+
+	// 启动时检查一次下载器, 失败只记录日志
+	go func() {
+		if err := p.downloader.CheckConnection(p.ctx); err != nil {
+			slog.Error("[program] 下载器检查失败", "error", err)
+		}
+	}()
 
 	// 创建并启动 taskrunner
 	renamer := rename.New(p.db, p.downloader)

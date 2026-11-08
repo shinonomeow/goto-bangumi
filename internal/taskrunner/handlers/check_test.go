@@ -16,10 +16,6 @@ type checkNetworkErrorDownloader struct {
 	downloader.BaseDownloader
 }
 
-func (d *checkNetworkErrorDownloader) Auth(context.Context) (bool, error) {
-	return true, nil
-}
-
 func (d *checkNetworkErrorDownloader) CheckHash(context.Context, string) (string, error) {
 	return "", &apperrors.NetworkError{Err: errors.New("temporary failure")}
 }

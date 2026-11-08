@@ -15,8 +15,6 @@ func newTestMock(t *testing.T) *MockDownloader {
 		Type:     "mock",
 		SavePath: "/downloads/Bangumi",
 		Host:     "127.0.0.1:8080",
-		Username: "admin",
-		Password: "adminadmin",
 	})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
@@ -263,17 +261,9 @@ func TestMockDownloader_InterfaceLifecycle(t *testing.T) {
 		Type:     "mock",
 		SavePath: "/downloads/Bangumi",
 		Host:     "127.0.0.1:8080",
-		Username: "admin",
-		Password: "adminadmin",
 	})
 	if err != nil {
 		t.Fatalf("Init error: %v", err)
-	}
-
-	// 2. Auth
-	ok, err := d.Auth(ctx)
-	if err != nil || !ok {
-		t.Fatalf("Auth failed: ok=%v, err=%v", ok, err)
 	}
 
 	// 3. Add 种子
@@ -326,7 +316,7 @@ func TestMockDownloader_InterfaceLifecycle(t *testing.T) {
 	// 7. Rename
 	oldName := files[0]
 	newName := "Lifecycle Test - S01E01.mp4"
-	ok, err = d.Rename(ctx, hash, oldName, newName)
+	ok, err := d.Rename(ctx, hash, oldName, newName)
 	if err != nil || !ok {
 		t.Fatalf("Rename failed: ok=%v, err=%v", ok, err)
 	}
@@ -369,12 +359,6 @@ func TestMockDownloader_InterfaceLifecycle(t *testing.T) {
 	_, err = d.CheckHash(ctx, hash)
 	if err == nil {
 		t.Error("CheckHash should fail after delete")
-	}
-
-	// 11. Logout
-	ok, err = d.Logout(ctx)
-	if err != nil || !ok {
-		t.Fatalf("Logout failed: ok=%v, err=%v", ok, err)
 	}
 }
 
@@ -436,26 +420,5 @@ func TestNewDownloader_MockType(t *testing.T) {
 	}
 	if _, ok := d.(*MockDownloader); !ok {
 		t.Errorf("NewDownloader('mock') returned %T, want *MockDownloader", d)
-	}
-}
-
-func TestMockDownloader_AuthLogout(t *testing.T) {
-	d := newTestMock(t)
-	ctx := context.Background()
-
-	ok, err := d.Auth(ctx)
-	if err != nil || !ok {
-		t.Fatalf("Auth failed: ok=%v, err=%v", ok, err)
-	}
-	if !d.loggedIn {
-		t.Error("loggedIn should be true after Auth")
-	}
-
-	ok, err = d.Logout(ctx)
-	if err != nil || !ok {
-		t.Fatalf("Logout failed: ok=%v, err=%v", ok, err)
-	}
-	if d.loggedIn {
-		t.Error("loggedIn should be false after Logout")
 	}
 }

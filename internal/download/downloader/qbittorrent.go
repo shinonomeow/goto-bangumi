@@ -25,8 +25,6 @@ var QBAPI = map[string]string{
 	"getFiles":       "/api/v2/torrents/files",
 	"info":           "/api/v2/torrents/info",
 	"properties":     "/api/v2/torrents/properties",
-	"login":          "/api/v2/auth/login",
-	"logout":         "/api/v2/auth/logout",
 	"renameFile":     "/api/v2/torrents/renameFile",
 	"setCategory":    "/api/v2/torrents/setCategory",
 	"setLocation":    "/api/v2/torrents/setLocation",
@@ -85,6 +83,9 @@ func (d *QBittorrentDownloader) Init(config *model.DownloaderConfig) error {
 		"User-Agent": "goto-bangumi",
 	})
 
+	// qBittorrent 5.2.0+ 的 API key 以 Bearer token 方式认证, 无状态, 无需登录
+	d.client.SetAuthToken(strings.TrimSpace(d.config.Token))
+
 	// 设置 TLS 配置
 	// 如果不验证 SSL，则跳过证书验证
 	if !d.config.Ssl {
@@ -102,69 +103,27 @@ func (d *QBittorrentDownloader) wait(ctx context.Context) error {
 	return d.limiter.Wait(ctx, "qBittorrent")
 }
 
-// Auth 认证登录
-func (d *QBittorrentDownloader) Auth(ctx context.Context) (bool, error) {
+// Check 检查连通性和 API key 是否可用 (需要 qBittorrent 5.2.0+)
+func (d *QBittorrentDownloader) Check(ctx context.Context) error {
+	if strings.TrimSpace(d.config.Token) == "" {
+		return fmt.Errorf("[qBittorrent] API key 为空，请配置 token")
+	}
 	if err := d.wait(ctx); err != nil {
-		return false, err
+		return err
 	}
 
-	resp, err := d.client.R().
-		SetContext(ctx).
-		SetFormData(map[string]string{
-			"username": d.config.Username,
-			"password": d.config.Password,
-		}).
-		SetHeader("Content-Type", "application/x-www-form-urlencoded").
-		Post(QBAPI["login"])
+	resp, err := d.client.R().SetContext(ctx).Get(QBAPI["version"])
 	if err != nil {
-		// 网络连接错误：无法连接到服务器（connection refused、timeout 等）
-		slog.Error("[qBittorrent] 连接到qBittorrent时出错，请检查您的主机配置", "host", d.config.Host, "error", err)
-		return false, &apperrors.NetworkError{
-			Err:        fmt.Errorf("连接到qBittorrent时出错: %w", err),
-			StatusCode: 0, // StatusCode = 0 表示网络连接错误
-		}
+		return httpError(ctx, "连接到qBittorrent时出错，请检查主机配置", err)
 	}
 
-	if resp.StatusCode() == 403 {
-		slog.Error("[qBittorrent] 您的IP已被qBittorrent封禁，请解除封禁（或重启qBittorrent）后重试")
-		return false, &apperrors.DownloadForbiddenError{
-			Err: fmt.Errorf("IP被封禁"),
-		}
+	switch resp.StatusCode() {
+	case 200:
+		return nil
+	case 401, 403:
+		return fmt.Errorf("[qBittorrent] API key 无效，请检查 token 配置（需要 qBittorrent 5.2.0+）")
 	}
-
-	if resp.StatusCode() == 200 {
-		if strings.Contains(resp.String(), "Fails") {
-			// 认证错误：用户名或密码错误
-			slog.Error("[qBittorrent] 登录失败，请检查用户名/密码", "username", d.config.Username)
-			return false, &apperrors.DownloadAuthenticationError{
-				Err:  fmt.Errorf("用户名或密码错误"),
-				Name: d.config.Username,
-			}
-		}
-		return true, nil
-	}
-
-	// 到也不会有其他状态码
-	return false, &apperrors.NetworkError{Err: fmt.Errorf("登录失败：状态码 %d", resp.StatusCode()), StatusCode: resp.StatusCode()}
-}
-
-// Logout 登出
-func (d *QBittorrentDownloader) Logout(ctx context.Context) (bool, error) {
-	if err := d.wait(ctx); err != nil {
-		return false, err
-	}
-
-	resp, err := d.client.R().SetContext(ctx).Post(QBAPI["logout"])
-	if err != nil {
-		slog.Error("[qBittorrent] 登出错误", "error", err)
-		return false, &apperrors.NetworkError{Err: fmt.Errorf("登出错误: %w", err), StatusCode: 0}
-	}
-
-	if resp.StatusCode() == 200 {
-		return true, nil
-	}
-
-	return false, &apperrors.NetworkError{Err: fmt.Errorf("登出失败：状态码 %d", resp.StatusCode()), StatusCode: resp.StatusCode()}
+	return fmt.Errorf("[qBittorrent] 检查失败：状态码 %d", resp.StatusCode())
 }
 
 // AddCategory 添加分类
@@ -200,7 +159,7 @@ func (d *QBittorrentDownloader) GetTorrentFiles(ctx context.Context, hash string
 		SetQueryParam("hash", hash).
 		Get(QBAPI["getFiles"])
 	if err != nil {
-		return nil, err
+		return nil, httpError(ctx, "qBittorrent getFiles", err)
 	}
 
 	// 404 表示种子不存在
@@ -244,13 +203,11 @@ func (d *QBittorrentDownloader) GetTorrentInfo(ctx context.Context, hash string)
 		SetQueryParam("hash", hash).
 		Get(QBAPI["properties"])
 	if err != nil {
-		// 连接错误
 		slog.Error("[qBittorrent] torrent_info 连接错误", "error", err)
-		return nil, err
+		return nil, httpError(ctx, "qBittorrent properties", err)
 	}
-	if resp.StatusCode() == 403 {
-		slog.Error("[qBittorrent] 需要先登录", "function", "torrent_info")
-		return nil, &apperrors.DownloadAuthenticationError{Err: fmt.Errorf("需要先登录"), Name: d.config.Username}
+	if resp.StatusCode() == 401 || resp.StatusCode() == 403 {
+		return nil, fmt.Errorf("[qBittorrent] API key 无效，请检查 token 配置（需要 qBittorrent 5.2.0+）")
 	}
 
 	// 404 表示种子不存在但连接正常
@@ -310,7 +267,7 @@ func (d *QBittorrentDownloader) TorrentsInfo(ctx context.Context, statusFilter, 
 
 	resp, err := req.Get(QBAPI["info"])
 	if err != nil {
-		return nil, err
+		return nil, httpError(ctx, "qBittorrent info", err)
 	}
 
 	if resp.StatusCode() == 200 {
@@ -376,11 +333,10 @@ func (d *QBittorrentDownloader) Add(ctx context.Context, torrentInfo *model.Torr
 	}
 
 	if err != nil {
-		return nil, &apperrors.NetworkError{Err: fmt.Errorf("添加种子失败: %w", err), StatusCode: 0}
+		return nil, httpError(ctx, "qBittorrent add", err)
 	}
-	if resp.StatusCode() == 403 {
-		slog.Error("[qBittorrent] 需要先登录", "function", "add")
-		return nil, &apperrors.DownloadAuthenticationError{Err: fmt.Errorf("需要先登录"), Name: d.config.Username}
+	if resp.StatusCode() == 401 || resp.StatusCode() == 403 {
+		return nil, fmt.Errorf("[qBittorrent] API key 无效，请检查 token 配置（需要 qBittorrent 5.2.0+）")
 	}
 	if resp.StatusCode() == 200 {
 		respText := strings.ToLower(resp.String())
@@ -424,7 +380,7 @@ func (d *QBittorrentDownloader) Delete(ctx context.Context, hashes []string) (bo
 		}).
 		Post(QBAPI["delete"])
 	if err != nil {
-		return false, err
+		return false, httpError(ctx, "qBittorrent delete", err)
 	}
 
 	if resp.StatusCode() == 200 {
@@ -449,7 +405,7 @@ func (d *QBittorrentDownloader) Rename(ctx context.Context, torrentHash, oldPath
 		}).
 		Post(QBAPI["renameFile"])
 	if err != nil {
-		return false, err
+		return false, httpError(ctx, "qBittorrent renameFile", err)
 	}
 
 	if resp.StatusCode() == 200 {
@@ -481,7 +437,7 @@ func (d *QBittorrentDownloader) Move(ctx context.Context, hashes []string, newLo
 		}).
 		Post(QBAPI["setLocation"])
 	if err != nil {
-		return false, err
+		return false, httpError(ctx, "qBittorrent setLocation", err)
 	}
 
 	if resp.StatusCode() == 200 {
@@ -556,18 +512,3 @@ func (d *QBittorrentDownloader) SetPreferences(prefs map[string]interface{}) err
 
 	return nil
 }
-
-// handleException 统一处理异常
-// func (d *QBittorrentDownloader) handleException(err error, resp *resty.Response, functionName string) {
-// 	if resp != nil && resp.StatusCode() == 403 {
-// 		slog.Error("[qBittorrent] 需要先登录", "function", functionName)
-// 		return &apperrors.DownloadAuthenticationError{Err: fmt.Errorf("需要先登录"), Name: d.config.Username}
-// 		if resp != nil {
-// 			slog.Debug("[qBittorrent] 错误响应", "function", functionName, "status", resp.StatusCode(), "body", resp.String()[:min(200, len(resp.String()))])
-// 		}
-// 	} else if err != nil {
-// 		slog.Error("[qBittorrent] 错误", "function", functionName, "error", err)
-// 	} else if resp != nil {
-// 		slog.Error("[qBittorrent] HTTP错误", "function", functionName, "status", resp.StatusCode())
-// 	}
-// }

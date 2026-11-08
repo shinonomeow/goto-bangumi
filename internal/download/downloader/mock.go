@@ -25,7 +25,6 @@ type MockDownloader struct {
 	config              *model.DownloaderConfig
 	mu                  sync.RWMutex
 	torrents            map[string]*mockTorrent
-	loggedIn            bool
 	completionThreshold int
 }
 
@@ -61,16 +60,9 @@ func (d *MockDownloader) Init(config *model.DownloaderConfig) error {
 	return nil
 }
 
-// Auth 认证登录
-func (d *MockDownloader) Auth(ctx context.Context) (bool, error) {
-	d.loggedIn = true
-	return true, nil
-}
-
-// Logout 登出
-func (d *MockDownloader) Logout(ctx context.Context) (bool, error) {
-	d.loggedIn = false
-	return true, nil
+// Check 检查下载器状态
+func (d *MockDownloader) Check(ctx context.Context) error {
+	return nil
 }
 
 // Add 添加种子

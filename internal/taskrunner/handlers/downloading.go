@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"goto-bangumi/internal/apperrors"
 	"goto-bangumi/internal/database"
 	"goto-bangumi/internal/download"
 	"goto-bangumi/internal/model"
@@ -31,6 +32,9 @@ func NewDownloadingHandler(db *database.DB, dl *download.DownloadClient) taskrun
 		if err != nil {
 			slog.Error("[downloading handler] 获取种子信息失败",
 				"error", err, "duid", task.Torrent.DownloadUID)
+			if apperrors.IsNetworkError(err) {
+				return taskrunner.PhaseResult{PollAfter: 30 * time.Second}
+			}
 			return taskrunner.PhaseResult{Err: err}
 		}
 

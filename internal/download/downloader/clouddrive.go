@@ -60,12 +60,13 @@ func NewCloudDriveDownloader() *CloudDriveDownloader {
 	}
 }
 
-// Init creates the gRPC connection. Call Auth afterwards.
+// Init creates the gRPC connection and stores the API token.
 func (d *CloudDriveDownloader) Init(config *model.DownloaderConfig) error {
 	if config == nil {
 		return fmt.Errorf("config cannot be nil")
 	}
 	d.config = config
+	d.token = strings.TrimSpace(config.Token)
 	if d.limiter == nil {
 		d.limiter = newAPILimiterFromQPS(float64(d.apiInterval))
 	}
@@ -99,36 +100,28 @@ func (d *CloudDriveDownloader) authCtx(ctx context.Context) context.Context {
 	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+d.token)
 }
 
-// Auth stores the API token and resolves cloud info.
-func (d *CloudDriveDownloader) Auth(ctx context.Context) (bool, error) {
-	token := strings.TrimSpace(d.config.Token)
-	if token == "" {
-		return false, &apperrors.DownloadLoginError{
-			Err: fmt.Errorf("CloudDrive2 API token is empty"),
-		}
+// Check verifies the API token and resolves the cloud account used by SavePath
+// and its API rate limit. Called once at startup.
+func (d *CloudDriveDownloader) Check(ctx context.Context) error {
+	if d.token == "" {
+		return fmt.Errorf("[CloudDrive2] API token 为空，请配置 token")
 	}
-	d.token = token
-	slog.Info("[CloudDrive2] auth with API token")
 	// 发起一次请求GetAllCloudApis来获取有什么云盘， 然后从中拿到 CloudName 和 UserName
 	// 然后发起一次请求GetCloudAPIConfig来拿到 maxQueriesPerSecond
 	// API Limit
 	aCtx := d.authCtx(ctx)
 	if err := d.wait(ctx); err != nil {
-		return false, err
+		return err
 	}
 	apis, err := d.rpc.GetAllCloudApis(aCtx, &emptypb.Empty{})
-	// 有错误的时候会使用默认的配置
 	if err != nil {
 		if st, ok := status.FromError(err); ok && st.Code() == codes.PermissionDenied {
-			slog.Warn("[CloudDrive2] get cloud APIs permission denied, please allow <Get Cloud APIs>", "error", err)
-			return true, nil
+			return fmt.Errorf("[CloudDrive2] get cloud APIs permission denied, please allow <Get Cloud APIs>: %w", err)
 		}
-		slog.Warn("[CloudDrive2] could not fetch cloud APIs", "error", err)
-		return true, nil
+		return fmt.Errorf("[CloudDrive2] could not fetch cloud APIs: %w", err)
 	}
 	if len(apis.GetApis()) == 0 {
-		slog.Warn("[CloudDrive2] could not fetch cloud APIs", "error", err)
-		return true, nil
+		return fmt.Errorf("[CloudDrive2] no cloud account found")
 	}
 
 	// 从 SavePath 的第一个路径段提取云盘名称，匹配 API 列表来确定使用哪个云盘账号
@@ -144,7 +137,7 @@ func (d *CloudDriveDownloader) Auth(ctx context.Context) (bool, error) {
 	userName := selected.GetUserName()
 	apiInterval := d.apiInterval
 	if err := d.wait(ctx); err != nil {
-		return false, err
+		return err
 	}
 	config, err := d.rpc.GetCloudAPIConfig(aCtx, &clouddrive.GetCloudAPIConfigRequest{
 		CloudName: cloudName,
@@ -167,7 +160,7 @@ func (d *CloudDriveDownloader) Auth(ctx context.Context) (bool, error) {
 	d.mu.Unlock()
 	slog.Debug("[CloudDrive2] resolved cloud", "name", cloudName, "accountId", userName, "apiInterval", apiInterval)
 
-	return true, nil
+	return nil
 }
 
 // cloudPathFromPath extracts the first path segment: "/115Open/dir" -> "/115Open".
@@ -183,20 +176,6 @@ func cloudPathFromPath(path string) string {
 		return p[:idx+1]
 	}
 	return p
-}
-
-// Logout clears the local API token and closes the connection.
-func (d *CloudDriveDownloader) Logout(ctx context.Context) (bool, error) {
-	d.mu.Lock()
-	d.token = ""
-	d.cloudName = ""
-	d.cloudAcctID = ""
-	d.mu.Unlock()
-	if d.conn != nil {
-		_ = d.conn.Close()
-		d.conn = nil
-	}
-	return true, nil
 }
 
 // Add submits a magnet URI to CloudDrive2 offline download queue.
@@ -223,7 +202,7 @@ func (d *CloudDriveDownloader) Add(ctx context.Context, torrentInfo *model.Torre
 		ToFolder: savePath,
 	})
 	if err != nil {
-		return nil, &apperrors.NetworkError{Err: fmt.Errorf("CloudDrive2 AddOfflineFiles: %w", err)}
+		return nil, rpcError(ctx, "CloudDrive2 AddOfflineFiles", err)
 	}
 	if !result.GetSuccess() {
 		return nil, fmt.Errorf("[CloudDrive2] add offline failed: %s", result.GetErrorMessage())
@@ -253,7 +232,7 @@ func (d *CloudDriveDownloader) listOfflineFiles(ctx context.Context) ([]*clouddr
 		Path: d.config.SavePath,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("CloudDrive2 ListOfflineFilesByPath: %w", err)
+		return nil, rpcError(ctx, "CloudDrive2 ListOfflineFilesByPath", err)
 	}
 	return result.GetOfflineFiles(), nil
 }
@@ -338,7 +317,7 @@ func (d *CloudDriveDownloader) listSubFiles(ctx context.Context, path string) ([
 		ForceRefresh: false,
 	})
 	if err != nil {
-		return nil, err
+		return nil, rpcError(ctx, "CloudDrive2 GetSubFiles", err)
 	}
 
 	var all []*clouddrive.CloudDriveFile
@@ -348,7 +327,7 @@ func (d *CloudDriveDownloader) listSubFiles(ctx context.Context, path string) ([
 			break
 		}
 		if err != nil {
-			return nil, err
+			return nil, rpcError(ctx, "CloudDrive2 GetSubFiles", err)
 		}
 		all = append(all, reply.GetSubFiles()...)
 	}
@@ -418,7 +397,7 @@ func (d *CloudDriveDownloader) Rename(ctx context.Context, torrentHash, oldPath,
 		NewName:     newName,
 	})
 	if err != nil {
-		return false, &apperrors.NetworkError{Err: fmt.Errorf("CloudDrive2 RenameFile: %w", err)}
+		return false, rpcError(ctx, "CloudDrive2 RenameFile", err)
 	}
 	if !result.GetSuccess() {
 		return false, fmt.Errorf("[CloudDrive2] rename failed: %s", result.GetErrorMessage())
@@ -437,7 +416,7 @@ func (d *CloudDriveDownloader) Move(ctx context.Context, hashes []string, newLoc
 		DestPath:     newLocation,
 	})
 	if err != nil {
-		return false, &apperrors.NetworkError{Err: fmt.Errorf("CloudDrive2 MoveFile: %w", err)}
+		return false, rpcError(ctx, "CloudDrive2 MoveFile", err)
 	}
 	if !result.GetSuccess() {
 		return false, fmt.Errorf("[CloudDrive2] move failed: %s", result.GetErrorMessage())
@@ -467,7 +446,7 @@ func (d *CloudDriveDownloader) Delete(ctx context.Context, hashes []string) (boo
 		DeleteFiles:    true,
 	})
 	if err != nil {
-		return false, &apperrors.NetworkError{Err: fmt.Errorf("CloudDrive2 RemoveOfflineFiles: %w", err)}
+		return false, rpcError(ctx, "CloudDrive2 RemoveOfflineFiles", err)
 	}
 	if !result.GetSuccess() {
 		return false, fmt.Errorf("[CloudDrive2] delete failed: %s", result.GetErrorMessage())
@@ -488,7 +467,7 @@ func (d *CloudDriveDownloader) GetDownloadURL(ctx context.Context, filePath stri
 		GetDirectUrl: true,
 	})
 	if err != nil {
-		return "", nil, fmt.Errorf("CloudDrive2 GetDownloadUrlPath: %w", err)
+		return "", nil, rpcError(ctx, "CloudDrive2 GetDownloadUrlPath", err)
 	}
 
 	// Prefer direct URL from cloud storage provider

@@ -14,21 +14,13 @@ import (
 // 2. move, 用以实现改数据后的转移
 // 3. add, 用以加种子
 // 4. get_info, 获取当前所有的有关种子
-// 5. auth, 用以登陆
-// 6. check_host, 用以检查连通性
-// 7. logout,用以登出
+// 5. check, 启动时检查连通性和 token, 并刷新下载器信息
 type BaseDownloader interface {
 	// Init 初始化下载器
 	Init(config *model.DownloaderConfig) error
 
-	// Auth 用户认证
-	Auth(ctx context.Context) (bool, error)
-
-	// CheckHost 检查主机连通性
-	// CheckHost(ctx context.Context) (bool, error)
-
-	// Logout 登出
-	Logout(ctx context.Context) (bool, error)
+	// Check 启动时调用一次, 检查主机连通性和 API token, 并刷新下载器信息
+	Check(ctx context.Context) error
 
 	// GetTorrentFiles 获取种子的所有文件列表
 	GetTorrentFiles(ctx context.Context, hash string) ([]string, error)
